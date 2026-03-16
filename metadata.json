@@ -1,0 +1,5 @@
+{
+  "name": "Daily Revenue Tracker",
+  "description": "A daily revenue tracking application with support for cash, QR, and credit card payments, including automatic daily totals, monthly accumulation, and daily averages.",
+  "requestFramePermissions": []
+}
