@@ -22,6 +22,7 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   Database,
+  Package,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -45,8 +46,16 @@ interface RevenueRecord {
 interface GlassesRecord {
   id: string;
   day: number;
+  month: number;
+  year: number;
   glassesIn: number;
   glassesOut: number;
+  note?: string;
+}
+
+interface CalculatedGlassesRow extends GlassesRecord {
+  carry: number;
+  balance: number;
 }
 
 type RevenueByMonth = Record<string, RevenueRecord[]>;
@@ -79,6 +88,17 @@ const THAI_MONTHS = [
 
 type ViewMode = 'daily' | 'summary';
 
+const getBucketKey = (year: number, month: number) =>
+  `${year}-${String(month).padStart(2, '0')}`;
+
+const parseBucketKey = (key: string) => {
+  const [yearStr, monthStr] = key.split('-');
+  return {
+    year: Number(yearStr) || 0,
+    month: Number(monthStr) || 0,
+  };
+};
+
 export default function App() {
   const today = new Date();
   const initialMonth = today.getMonth() + 1;
@@ -87,12 +107,12 @@ export default function App() {
 
   const [allRevenueRecords, setAllRevenueRecords] = useState<RevenueByMonth>(() => {
     const saved = localStorage.getItem(REVENUE_STORAGE_KEY);
-    return saved ? JSON.parse(saved) : {};
+    return saved ? (JSON.parse(saved) as RevenueByMonth) : {};
   });
 
   const [allGlassesRecords, setAllGlassesRecords] = useState<GlassesByMonth>(() => {
     const saved = localStorage.getItem(GLASSES_STORAGE_KEY);
-    return saved ? JSON.parse(saved) : {};
+    return saved ? (JSON.parse(saved) as GlassesByMonth) : {};
   });
 
   const [month, setMonth] = useState(initialMonth);
@@ -110,14 +130,15 @@ export default function App() {
   const [editingGlassesId, setEditingGlassesId] = useState<string | null>(null);
   const [glassesEntry, setGlassesEntry] = useState({
     day: today.getDate(),
+    month: initialMonth,
+    year: initialYear,
     glassesIn: '',
     glassesOut: '',
+    note: '',
   });
 
-  const monthKey = `${year}-${String(month).padStart(2, '0')}`;
-
+  const monthKey = getBucketKey(year, month);
   const revenueRecords = allRevenueRecords[monthKey] || [];
-  const glassesRecords = allGlassesRecords[monthKey] || [];
 
   useEffect(() => {
     try {
@@ -158,21 +179,56 @@ export default function App() {
     });
   }, [sortedRevenueRecords]);
 
-  const sortedGlassesRecords = useMemo(() => {
-    return [...glassesRecords].sort((a, b) => a.day - b.day);
-  }, [glassesRecords]);
+  const allGlassesFlat = useMemo<GlassesRecord[]>(() => {
+    const result: GlassesRecord[] = [];
 
-  const calculatedGlassesData = useMemo(() => {
-    let balance = 0;
+    for (const key of Object.keys(allGlassesRecords)) {
+      const bucket = parseBucketKey(key);
+      const records = allGlassesRecords[key] || [];
 
-    return sortedGlassesRecords.map((record) => {
-      balance += record.glassesIn - record.glassesOut;
+      for (const record of records) {
+        result.push({
+          id: String(record.id || crypto.randomUUID()),
+          day: Number(record.day) || 1,
+          month: Number(record.month) || bucket.month,
+          year: Number(record.year) || bucket.year,
+          glassesIn: Number(record.glassesIn) || 0,
+          glassesOut: Number(record.glassesOut) || 0,
+          note: record.note || '',
+        });
+      }
+    }
+
+    return result;
+  }, [allGlassesRecords]);
+
+  const sortedAllGlassesRecords = useMemo(() => {
+    return [...allGlassesFlat].sort((a, b) => {
+      if (a.year !== b.year) return a.year - b.year;
+      if (a.month !== b.month) return a.month - b.month;
+      if (a.day !== b.day) return a.day - b.day;
+      return a.id.localeCompare(b.id);
+    });
+  }, [allGlassesFlat]);
+
+  const calculatedAllGlassesData = useMemo<CalculatedGlassesRow[]>(() => {
+    let runningBalance = 0;
+
+    return sortedAllGlassesRecords.map((record) => {
+      const carry = runningBalance;
+      runningBalance = carry + record.glassesIn - record.glassesOut;
+
       return {
         ...record,
-        balance,
+        carry,
+        balance: runningBalance,
       };
     });
-  }, [sortedGlassesRecords]);
+  }, [sortedAllGlassesRecords]);
+
+  const calculatedGlassesData = useMemo(() => {
+    return calculatedAllGlassesData.filter((r) => r.month === month && r.year === year);
+  }, [calculatedAllGlassesData, month, year]);
 
   const totalMonthly =
     calculatedRevenueData.length > 0
@@ -184,30 +240,34 @@ export default function App() {
       ? calculatedRevenueData[calculatedRevenueData.length - 1].average
       : 0;
 
-  const totalGlassesIn = glassesRecords.reduce((sum, r) => sum + (r.glassesIn || 0), 0);
-  const totalGlassesOut = glassesRecords.reduce((sum, r) => sum + (r.glassesOut || 0), 0);
+  const totalGlassesIn = calculatedGlassesData.reduce((sum, r) => sum + r.glassesIn, 0);
+  const totalGlassesOut = calculatedGlassesData.reduce((sum, r) => sum + r.glassesOut, 0);
+
+  const totalGlassesBalance =
+    calculatedAllGlassesData.length > 0
+      ? calculatedAllGlassesData[calculatedAllGlassesData.length - 1].balance
+      : 0;
 
   const yearlySummary = useMemo(() => {
     return THAI_MONTHS.map((monthName, index) => {
       const monthNumber = index + 1;
-      const key = `${year}-${String(monthNumber).padStart(2, '0')}`;
+      const key = getBucketKey(year, monthNumber);
 
       const monthRevenueRecords = allRevenueRecords[key] || [];
-      const monthGlassesRecords = allGlassesRecords[key] || [];
+      const monthGlassesRows = calculatedAllGlassesData.filter(
+        (r) => r.year === year && r.month === monthNumber
+      );
 
       const totalCash = monthRevenueRecords.reduce((sum, r) => sum + r.cash, 0);
       const totalQr = monthRevenueRecords.reduce((sum, r) => sum + r.qr, 0);
       const totalCredit = monthRevenueRecords.reduce((sum, r) => sum + r.credit, 0);
       const total = totalCash + totalQr + totalCredit;
 
-      const totalGlassesInMonth = monthGlassesRecords.reduce(
-        (sum, r) => sum + (r.glassesIn || 0),
-        0
-      );
-      const totalGlassesOutMonth = monthGlassesRecords.reduce(
-        (sum, r) => sum + (r.glassesOut || 0),
-        0
-      );
+      const totalGlassesInMonth = monthGlassesRows.reduce((sum, r) => sum + r.glassesIn, 0);
+      const totalGlassesOutMonth = monthGlassesRows.reduce((sum, r) => sum + r.glassesOut, 0);
+
+      const endingBalance =
+        monthGlassesRows.length > 0 ? monthGlassesRows[monthGlassesRows.length - 1].balance : 0;
 
       const daysUsed = monthRevenueRecords.length;
       const avg = daysUsed > 0 ? total / daysUsed : 0;
@@ -221,11 +281,12 @@ export default function App() {
         total,
         totalGlassesIn: totalGlassesInMonth,
         totalGlassesOut: totalGlassesOutMonth,
+        totalGlassesBalance: endingBalance,
         daysUsed,
         avg,
       };
     });
-  }, [allRevenueRecords, allGlassesRecords, year]);
+  }, [allRevenueRecords, calculatedAllGlassesData, year]);
 
   const yearlyTotal = yearlySummary.reduce((sum, m) => sum + m.total, 0);
   const yearlyCash = yearlySummary.reduce((sum, m) => sum + m.totalCash, 0);
@@ -233,6 +294,11 @@ export default function App() {
   const yearlyCredit = yearlySummary.reduce((sum, m) => sum + m.totalCredit, 0);
   const yearlyGlassesIn = yearlySummary.reduce((sum, m) => sum + m.totalGlassesIn, 0);
   const yearlyGlassesOut = yearlySummary.reduce((sum, m) => sum + m.totalGlassesOut, 0);
+
+  const yearlyGlassesBalance = (() => {
+    const rowsInYear = calculatedAllGlassesData.filter((r) => r.year === year);
+    return rowsInYear.length > 0 ? rowsInYear[rowsInYear.length - 1].balance : 0;
+  })();
 
   const formatNumber = (num: number) => {
     return new Intl.NumberFormat('th-TH', {
@@ -255,8 +321,11 @@ export default function App() {
     setEditingGlassesId(null);
     setGlassesEntry({
       day: 1,
+      month,
+      year,
       glassesIn: '',
       glassesOut: '',
+      note: '',
     });
   };
 
@@ -264,18 +333,6 @@ export default function App() {
     updater: (prevMonthRecords: RevenueRecord[]) => RevenueRecord[]
   ) => {
     setAllRevenueRecords((prev) => {
-      const currentMonthRecords = prev[monthKey] || [];
-      return {
-        ...prev,
-        [monthKey]: updater(currentMonthRecords),
-      };
-    });
-  };
-
-  const updateCurrentMonthGlassesRecords = (
-    updater: (prevMonthRecords: GlassesRecord[]) => GlassesRecord[]
-  ) => {
-    setAllGlassesRecords((prev) => {
       const currentMonthRecords = prev[monthKey] || [];
       return {
         ...prev,
@@ -361,13 +418,46 @@ export default function App() {
     }
   };
 
+  const saveNewGlassesRecord = (payload: GlassesRecord) => {
+    const targetKey = getBucketKey(payload.year, payload.month);
+
+    setAllGlassesRecords((prev) => {
+      const current = prev[targetKey] || [];
+      return {
+        ...prev,
+        [targetKey]: [...current, payload],
+      };
+    });
+  };
+
+  const updateExistingGlassesRecord = (payload: GlassesRecord) => {
+    setAllGlassesRecords((prev) => {
+      const next: GlassesByMonth = {};
+
+      for (const key of Object.keys(prev)) {
+        const records = prev[key] || [];
+        next[key] = records.filter((r: GlassesRecord) => r.id !== payload.id);
+      }
+
+      const targetKey = getBucketKey(payload.year, payload.month);
+      const targetRecords = next[targetKey] || [];
+
+      next[targetKey] = [...targetRecords, payload];
+
+      return next;
+    });
+  };
+
   const addOrUpdateGlassesRecord = (e: React.FormEvent) => {
     e.preventDefault();
 
     const payload = {
       day: Number(glassesEntry.day),
+      month: Number(glassesEntry.month),
+      year: Number(glassesEntry.year),
       glassesIn: Number(glassesEntry.glassesIn) || 0,
       glassesOut: Number(glassesEntry.glassesOut) || 0,
+      note: glassesEntry.note.trim(),
     };
 
     if (!payload.day || payload.day < 1 || payload.day > 31) {
@@ -375,36 +465,55 @@ export default function App() {
       return;
     }
 
+    if (!payload.month || payload.month < 1 || payload.month > 12) {
+      alert('กรุณาเลือกเดือนให้ถูกต้อง');
+      return;
+    }
+
+    if (!payload.year || payload.year < 1) {
+      alert('กรุณากรอกปีให้ถูกต้อง');
+      return;
+    }
+
+    if (payload.glassesIn < 0 || payload.glassesOut < 0) {
+      alert('จำนวนเข้าและออกต้องไม่ติดลบ');
+      return;
+    }
+
+    const duplicateDay = allGlassesFlat.some(
+      (r) =>
+        r.day === payload.day &&
+        r.month === payload.month &&
+        r.year === payload.year &&
+        r.id !== editingGlassesId
+    );
+
+    if (duplicateDay) {
+      alert('มีข้อมูลแว่นของวันนี้อยู่แล้ว กรุณากดแก้ไขจากตาราง');
+      return;
+    }
+
     if (editingGlassesId) {
-      updateCurrentMonthGlassesRecords((prevMonthRecords) =>
-        prevMonthRecords.map((record) =>
-          record.id === editingGlassesId ? { ...record, ...payload } : record
-        )
-      );
+      updateExistingGlassesRecord({
+        id: editingGlassesId,
+        ...payload,
+      });
       resetGlassesForm();
       return;
     }
 
-    const duplicateDay = glassesRecords.some((r) => r.day === payload.day);
-    if (duplicateDay) {
-      alert('เดือนนี้มีข้อมูลแว่นของวันนี้แล้ว กรุณากดแก้ไขจากตาราง');
-      return;
-    }
-
-    const newRecord: GlassesRecord = {
+    saveNewGlassesRecord({
       id: crypto.randomUUID(),
       ...payload,
-    };
-
-    updateCurrentMonthGlassesRecords((prevMonthRecords) => [
-      ...prevMonthRecords,
-      newRecord,
-    ]);
+    });
 
     setGlassesEntry({
       day: payload.day < 31 ? payload.day + 1 : 1,
+      month: payload.month,
+      year: payload.year,
       glassesIn: '',
       glassesOut: '',
+      note: '',
     });
   };
 
@@ -412,23 +521,35 @@ export default function App() {
     setEditingGlassesId(record.id);
     setGlassesEntry({
       day: record.day,
+      month: record.month,
+      year: record.year,
       glassesIn: record.glassesIn ? String(record.glassesIn) : '',
       glassesOut: record.glassesOut ? String(record.glassesOut) : '',
+      note: record.note || '',
     });
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const deleteGlassesRecord = (id: string) => {
-    const target = glassesRecords.find((r) => r.id === id);
+    const target = allGlassesFlat.find((r) => r.id === id);
     if (!target) return;
 
-    const ok = confirm(`ต้องการลบข้อมูลแว่นวันที่ ${target.day} ใช่หรือไม่?`);
+    const ok = confirm(
+      `ต้องการลบข้อมูลแว่นวันที่ ${target.day}/${target.month}/${target.year} ใช่หรือไม่?`
+    );
     if (!ok) return;
 
-    updateCurrentMonthGlassesRecords((prevMonthRecords) =>
-      prevMonthRecords.filter((r) => r.id !== id)
-    );
+    setAllGlassesRecords((prev) => {
+      const next: GlassesByMonth = {};
+
+      for (const key of Object.keys(prev)) {
+        const records = prev[key] || [];
+        next[key] = records.filter((r: GlassesRecord) => r.id !== id);
+      }
+
+      return next;
+    });
 
     if (editingGlassesId === id) {
       resetGlassesForm();
@@ -444,9 +565,10 @@ export default function App() {
       [monthKey]: [],
     }));
 
+    const glassesKey = getBucketKey(year, month);
     setAllGlassesRecords((prev) => ({
       ...prev,
-      [monthKey]: [],
+      [glassesKey]: [],
     }));
 
     resetRevenueForm();
@@ -455,21 +577,31 @@ export default function App() {
 
   const changeMonth = (direction: 'prev' | 'next') => {
     resetRevenueForm();
-    resetGlassesForm();
+    setEditingGlassesId(null);
 
     if (direction === 'prev') {
       if (month === 1) {
-        setMonth(12);
-        setYear((prev) => prev - 1);
+        const nextMonth = 12;
+        const nextYear = year - 1;
+        setMonth(nextMonth);
+        setYear(nextYear);
+        setGlassesEntry((prev) => ({ ...prev, month: nextMonth, year: nextYear }));
       } else {
-        setMonth((prev) => prev - 1);
+        const nextMonth = month - 1;
+        setMonth(nextMonth);
+        setGlassesEntry((prev) => ({ ...prev, month: nextMonth, year }));
       }
     } else {
       if (month === 12) {
-        setMonth(1);
-        setYear((prev) => prev + 1);
+        const nextMonth = 1;
+        const nextYear = year + 1;
+        setMonth(nextMonth);
+        setYear(nextYear);
+        setGlassesEntry((prev) => ({ ...prev, month: nextMonth, year: nextYear }));
       } else {
-        setMonth((prev) => prev + 1);
+        const nextMonth = month + 1;
+        setMonth(nextMonth);
+        setGlassesEntry((prev) => ({ ...prev, month: nextMonth, year }));
       }
     }
   };
@@ -499,8 +631,17 @@ export default function App() {
 
   const exportGlassesCSV = () => {
     const csv = [
-      ['วันที่', 'แว่นเข้า', 'แว่นออก', 'คงเหลือสะสม'],
-      ...calculatedGlassesData.map((r) => [r.day, r.glassesIn, r.glassesOut, r.balance]),
+      ['วันที่', 'เดือน', 'ปี', 'ยอดยกมา', 'เข้า', 'ออก', 'คงเหลือ', 'รายละเอียดแว่น/หมายเหตุ'],
+      ...calculatedGlassesData.map((r) => [
+        r.day,
+        r.month,
+        r.year,
+        r.carry,
+        r.glassesIn,
+        r.glassesOut,
+        r.balance,
+        `"${(r.note || '').replace(/"/g, '""')}"`,
+      ]),
     ]
       .map((row) => row.join(','))
       .join('\n');
@@ -508,13 +649,24 @@ export default function App() {
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `glasses_${year}_${String(month).padStart(2, '0')}.csv`;
+    link.download = `glasses_stock_${year}_${String(month).padStart(2, '0')}.csv`;
     link.click();
   };
 
   const exportYearlySummaryCSV = () => {
     const csv = [
-      ['เดือน', 'เงินสด', 'QR', 'เครดิต', 'แว่นเข้า', 'แว่นออก', 'รวมทั้งเดือน', 'จำนวนวันที่บันทึก', 'เฉลี่ยต่อวันที่บันทึก'],
+      [
+        'เดือน',
+        'เงินสด',
+        'QR',
+        'เครดิต',
+        'แว่นเข้า',
+        'แว่นออก',
+        'แว่นคงเหลือปลายเดือน',
+        'รวมทั้งเดือน',
+        'จำนวนวันที่บันทึก',
+        'เฉลี่ยต่อวันที่บันทึก',
+      ],
       ...yearlySummary.map((r) => [
         r.month,
         r.totalCash,
@@ -522,6 +674,7 @@ export default function App() {
         r.totalCredit,
         r.totalGlassesIn,
         r.totalGlassesOut,
+        r.totalGlassesBalance,
         r.total,
         r.daysUsed,
         Math.round(r.avg),
@@ -539,7 +692,7 @@ export default function App() {
 
   const exportBackupJSON = () => {
     const backupData: BackupData = {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       revenue: allRevenueRecords,
       glasses: allGlassesRecords,
@@ -619,9 +772,11 @@ export default function App() {
                   <select
                     value={month}
                     onChange={(e) => {
+                      const nextMonth = Number(e.target.value);
                       resetRevenueForm();
-                      resetGlassesForm();
-                      setMonth(Number(e.target.value));
+                      setEditingGlassesId(null);
+                      setMonth(nextMonth);
+                      setGlassesEntry((prev) => ({ ...prev, month: nextMonth, year }));
                     }}
                     className="bg-white border border-black/10 rounded-lg px-2 py-1 text-xs"
                   >
@@ -636,9 +791,11 @@ export default function App() {
                     type="number"
                     value={year}
                     onChange={(e) => {
+                      const nextYear = Number(e.target.value);
                       resetRevenueForm();
-                      resetGlassesForm();
-                      setYear(Number(e.target.value));
+                      setEditingGlassesId(null);
+                      setYear(nextYear);
+                      setGlassesEntry((prev) => ({ ...prev, month, year: nextYear }));
                     }}
                     className="bg-white border border-black/10 rounded-lg px-3 py-1 text-xs w-24"
                     placeholder="ปี"
@@ -655,7 +812,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="bg-white p-4 rounded-2xl shadow-sm border border-black/5">
                 <p className="text-[10px] uppercase tracking-tighter text-gray-400 mb-1">
                   รวมเดือนนี้
@@ -676,7 +833,7 @@ export default function App() {
 
               <div className="bg-white p-4 rounded-2xl shadow-sm border border-black/5">
                 <p className="text-[10px] uppercase tracking-tighter text-gray-400 mb-1 flex items-center gap-1">
-                  <ArrowDownToLine size={12} /> แว่นเข้า
+                  <ArrowDownToLine size={12} /> แว่นเข้าเดือนนี้
                 </p>
                 <p className="text-2xl font-mono font-medium">
                   {formatNumber(totalGlassesIn)}
@@ -685,10 +842,19 @@ export default function App() {
 
               <div className="bg-white p-4 rounded-2xl shadow-sm border border-black/5">
                 <p className="text-[10px] uppercase tracking-tighter text-gray-400 mb-1 flex items-center gap-1">
-                  <ArrowUpFromLine size={12} /> แว่นออก
+                  <ArrowUpFromLine size={12} /> แว่นออกเดือนนี้
                 </p>
                 <p className="text-2xl font-mono font-medium">
                   {formatNumber(totalGlassesOut)}
+                </p>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl shadow-sm border border-black/5">
+                <p className="text-[10px] uppercase tracking-tighter text-gray-400 mb-1 flex items-center gap-1">
+                  <Package size={12} /> คงเหลือทั้งหมด
+                </p>
+                <p className="text-2xl font-mono font-medium">
+                  {formatNumber(totalGlassesBalance)}
                 </p>
               </div>
             </div>
@@ -966,34 +1132,75 @@ export default function App() {
                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-black/5">
                   <h2 className="text-xl font-serif italic mb-3 flex items-center gap-2">
                     {editingGlassesId ? <Pencil size={20} /> : <Plus size={20} />}
-                    {editingGlassesId ? 'แก้ไขแว่นเข้า-ออก' : 'บันทึกแว่นเข้า-ออก'}
+                    {editingGlassesId ? 'แก้ไขสต๊อกแว่น' : 'บันทึกสต๊อกแว่น'}
                   </h2>
 
                   <p className="text-xs text-gray-400 mb-6">
-                    เดือนที่กำลังใช้งาน: {THAI_MONTHS[month - 1]} {year}
+                    สต๊อกแว่นนับต่อเนื่องทั้งหมด ยอดยกมาจะต่อจากข้อมูลก่อนหน้าให้อัตโนมัติ
                   </p>
 
                   <form onSubmit={addOrUpdateGlassesRecord} className="space-y-4">
-                    <div>
-                      <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">
-                        วันที่
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="31"
-                        value={glassesEntry.day}
-                        onChange={(e) =>
-                          setGlassesEntry({ ...glassesEntry, day: Number(e.target.value) })
-                        }
-                        className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none font-mono"
-                        required
-                      />
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">
+                          วันที่
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={glassesEntry.day}
+                          onChange={(e) =>
+                            setGlassesEntry({ ...glassesEntry, day: Number(e.target.value) })
+                          }
+                          className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none font-mono"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">
+                          เดือน
+                        </label>
+                        <select
+                          value={glassesEntry.month}
+                          onChange={(e) =>
+                            setGlassesEntry({
+                              ...glassesEntry,
+                              month: Number(e.target.value),
+                            })
+                          }
+                          className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none"
+                        >
+                          {THAI_MONTHS.map((m, index) => (
+                            <option key={m} value={index + 1}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1">
+                          ปี
+                        </label>
+                        <input
+                          type="number"
+                          value={glassesEntry.year}
+                          onChange={(e) =>
+                            setGlassesEntry({
+                              ...glassesEntry,
+                              year: Number(e.target.value),
+                            })
+                          }
+                          className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none font-mono"
+                        />
+                      </div>
                     </div>
 
                     <div>
                       <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
-                        <ArrowDownToLine size={12} /> แว่นเข้า
+                        <ArrowDownToLine size={12} /> เข้า
                       </label>
                       <input
                         type="number"
@@ -1009,7 +1216,7 @@ export default function App() {
 
                     <div>
                       <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
-                        <ArrowUpFromLine size={12} /> แว่นออก
+                        <ArrowUpFromLine size={12} /> ออก
                       </label>
                       <input
                         type="number"
@@ -1021,6 +1228,22 @@ export default function App() {
                         }
                         className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none font-mono"
                       />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] uppercase font-bold text-gray-400 mb-1 flex items-center gap-1">
+                        <Package size={12} /> รายละเอียดแว่น / หมายเหตุ
+                      </label>
+                      <textarea
+                        placeholder="เช่น เลนส์ Lee Cooper 1, กรอบดำ 2, งานซ่อม 1"
+                        value={glassesEntry.note}
+                        onChange={(e) =>
+                          setGlassesEntry({ ...glassesEntry, note: e.target.value })
+                        }
+                        rows={4}
+                        className="w-full bg-[#F5F5F0] border-none rounded-xl p-3 focus:ring-2 focus:ring-black/5 outline-none"
+                      />
+                      <p className="mt-1 text-[11px] text-gray-400">ช่องนี้ไม่จำเป็นต้องกรอก</p>
                     </div>
 
                     <div className="flex gap-3 pt-2">
@@ -1056,13 +1279,19 @@ export default function App() {
                             วันที่
                           </th>
                           <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
-                            แว่นเข้า
+                            ยอดยกมา
                           </th>
                           <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
-                            แว่นออก
+                            เข้า
+                          </th>
+                          <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
+                            ออก
                           </th>
                           <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5 bg-[#F9F9F7]">
-                            คงเหลือสะสม
+                            คงเหลือ
+                          </th>
+                          <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
+                            รายละเอียดแว่น / หมายเหตุ
                           </th>
                           <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5 text-right">
                             จัดการ
@@ -1075,10 +1304,10 @@ export default function App() {
                           {calculatedGlassesData.length === 0 ? (
                             <tr>
                               <td
-                                colSpan={5}
+                                colSpan={7}
                                 className="p-12 text-center text-gray-400 italic font-serif"
                               >
-                                ยังไม่มีข้อมูลแว่นสำหรับเดือนนี้
+                                ยังไม่มีข้อมูลสต๊อกแว่นสำหรับเดือนนี้
                               </td>
                             </tr>
                           ) : (
@@ -1092,7 +1321,10 @@ export default function App() {
                                   editingGlassesId === row.id ? 'bg-amber-50' : ''
                                 }`}
                               >
-                                <td className="p-4 font-mono font-bold">{row.day}</td>
+                                <td className="p-4 font-mono font-bold">
+                                  {row.day}/{row.month}
+                                </td>
+                                <td className="p-4 font-mono text-sm">{formatNumber(row.carry)}</td>
                                 <td className="p-4 font-mono text-sm">
                                   {row.glassesIn > 0 ? formatNumber(row.glassesIn) : '-'}
                                 </td>
@@ -1101,6 +1333,9 @@ export default function App() {
                                 </td>
                                 <td className="p-4 font-mono font-medium bg-[#F9F9F7]/50">
                                   {formatNumber(row.balance)}
+                                </td>
+                                <td className="p-4 text-sm text-gray-700 whitespace-pre-line">
+                                  {row.note?.trim() ? row.note : '-'}
                                 </td>
                                 <td className="p-4">
                                   <div className="flex items-center justify-end gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
@@ -1130,12 +1365,22 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-6 flex justify-end gap-4 flex-wrap">
+                <div className="mt-6 flex justify-between gap-4 flex-wrap items-center">
+                  <div className="text-sm text-gray-600 flex items-center gap-2">
+                    <Package size={16} />
+                    <span>
+                      คงเหลือทั้งหมดตอนนี้:{' '}
+                      <span className="font-semibold text-black">
+                        {formatNumber(totalGlassesBalance)}
+                      </span>
+                    </span>
+                  </div>
+
                   <button
                     onClick={exportGlassesCSV}
                     className="text-xs text-gray-600 hover:text-black transition-colors flex items-center gap-1"
                   >
-                    <Download size={14} /> ส่งออก CSV แว่นเข้า-ออก
+                    <Download size={14} /> ส่งออก CSV สต๊อกแว่น
                   </button>
                 </div>
               </section>
@@ -1152,7 +1397,7 @@ export default function App() {
           </div>
         ) : (
           <div className="space-y-8">
-            <section className="grid grid-cols-1 md:grid-cols-6 gap-4">
+            <section className="grid grid-cols-1 md:grid-cols-7 gap-4">
               <div className="bg-white p-5 rounded-2xl shadow-sm border border-black/5">
                 <p className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
                   ยอดรวมทั้งปี
@@ -1194,13 +1439,22 @@ export default function App() {
                 </p>
                 <p className="text-2xl font-mono">{formatNumber(yearlyGlassesOut)}</p>
               </div>
+
+              <div className="bg-white p-5 rounded-2xl shadow-sm border border-black/5">
+                <p className="text-[10px] uppercase tracking-widest text-gray-400 mb-1">
+                  คงเหลือปลายปี
+                </p>
+                <p className="text-2xl font-mono">{formatNumber(yearlyGlassesBalance)}</p>
+              </div>
             </section>
 
             <section className="bg-white rounded-3xl shadow-sm border border-black/5 p-6">
               <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
                 <div>
                   <h2 className="text-2xl font-serif italic">กราฟสรุปยอดรายเดือน</h2>
-                  <p className="text-sm text-gray-400 mt-1">ดูแนวโน้มรายรับของแต่ละเดือนในปี {year}</p>
+                  <p className="text-sm text-gray-400 mt-1">
+                    ดูแนวโน้มรายรับของแต่ละเดือนในปี {year}
+                  </p>
                 </div>
 
                 <button
@@ -1231,7 +1485,7 @@ export default function App() {
               <div className="p-6 border-b border-black/5">
                 <h2 className="text-2xl font-serif italic">ตารางสรุปทุกเดือน</h2>
                 <p className="text-sm text-gray-400 mt-1">
-                  แสดงยอดรวมรายรับและจำนวนแว่นเข้า / ออก ของแต่ละเดือน
+                  รายรับยังแยกตามเดือน ส่วนแว่นเป็นสต๊อกต่อเนื่องทั้งระบบ
                 </p>
               </div>
 
@@ -1256,6 +1510,9 @@ export default function App() {
                       </th>
                       <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
                         แว่นออก
+                      </th>
+                      <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5">
+                        คงเหลือปลายเดือน
                       </th>
                       <th className="p-4 text-[10px] uppercase tracking-widest text-gray-400 font-bold border-b border-black/5 bg-[#F9F9F7]">
                         รวมทั้งเดือน
@@ -1283,6 +1540,7 @@ export default function App() {
                         <td className="p-4 font-mono">{formatNumber(row.totalCredit)}</td>
                         <td className="p-4 font-mono">{formatNumber(row.totalGlassesIn)}</td>
                         <td className="p-4 font-mono">{formatNumber(row.totalGlassesOut)}</td>
+                        <td className="p-4 font-mono">{formatNumber(row.totalGlassesBalance)}</td>
                         <td className="p-4 font-mono font-semibold bg-[#F9F9F7]/50">
                           {formatNumber(row.total)}
                         </td>
@@ -1300,6 +1558,7 @@ export default function App() {
                       <td className="p-4 font-mono font-bold">{formatNumber(yearlyCredit)}</td>
                       <td className="p-4 font-mono font-bold">{formatNumber(yearlyGlassesIn)}</td>
                       <td className="p-4 font-mono font-bold">{formatNumber(yearlyGlassesOut)}</td>
+                      <td className="p-4 font-mono font-bold">{formatNumber(yearlyGlassesBalance)}</td>
                       <td className="p-4 font-mono font-bold">{formatNumber(yearlyTotal)}</td>
                       <td className="p-4 font-mono">
                         {yearlySummary.reduce((sum, row) => sum + row.daysUsed, 0)}
